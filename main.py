@@ -187,69 +187,170 @@ def handle_private(message: pyrogram.types.messages_and_media.message.Message, c
 			   
 		elif "Sticker" == msg_type:
 			bot.send_sticker(message.chat.id, file, reply_to_message_id=message.id)
+import pyrogram
+from pyrogram import Client, filters
+from pyrogram.errors import UserAlreadyParticipant, InviteHashExpired, UsernameNotOccupied
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-		elif "Voice" == msg_type:
-			bot.send_voice(message.chat.id, file, caption=msg.caption, thumb=thumb, caption_entities=msg.caption_entities, reply_to_message_id=message.id, progress=progress, progress_args=[message,"up"])
+import time
+import os
+import threading
+import json
 
-		elif "Audio" == msg_type:
-			try:
-				thumb = acc.download_media(msg.audio.thumbs[0].file_id)
-			except: thumb = None
-				
-			bot.send_audio(message.chat.id, file, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=message.id, progress=progress, progress_args=[message,"up"])   
-			if thumb != None: os.remove(thumb)
+# Load configuration
+with open('config.json', 'r') as f:
+    DATA = json.load(f)
+def getenv(var): 
+    return os.environ.get(var) or DATA.get(var, None)
 
-		elif "Photo" == msg_type:
-			bot.send_photo(message.chat.id, file, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=message.id)
+bot_token = getenv("TOKEN") 
+api_hash = getenv("HASH") 
+api_id = getenv("ID")
+bot = Client("mybot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
 
-		os.remove(file)
-		if os.path.exists(f'{message.id}upstatus.txt'): os.remove(f'{message.id}upstatus.txt')
-		bot.delete_messages(message.chat.id,[smsg.id])
+ss = getenv("STRING")
+if ss is not None:
+    acc = Client("myacc", api_id=api_id, api_hash=api_hash, session_string=ss)
+    acc.start()
+else: 
+    acc = None
 
+# Download status function
+def downstatus(statusfile, message):
+    while True:
+        if os.path.exists(statusfile):
+            break
+    time.sleep(3)
+    while os.path.exists(statusfile):
+        with open(statusfile, "r") as downread:
+            txt = downread.read()
+        try:
+            bot.edit_message_text(message.chat.id, message.id, f"__Downloaded__ : **{txt}**")
+            time.sleep(5)
+        except:
+            time.sleep(5)
 
-# get the type of message
+# Upload status function
+def upstatus(statusfile, message):
+    while True:
+        if os.path.exists(statusfile):
+            break
+    time.sleep(3)
+    while os.path.exists(statusfile):
+        with open(statusfile, "r") as upread:
+            txt = upread.read()
+        try:
+            bot.edit_message_text(message.chat.id, message.id, f"__Uploaded__ : **{txt}**")
+            time.sleep(5)
+        except:
+            time.sleep(5)
+
+# Progress writer function
+def progress(current, total, message, type):
+    with open(f'{message.id}{type}status.txt', "w") as fileup:
+        fileup.write(f"{current * 100 / total:.1f}%")
+
+# Handle private messages and downloads
+def handle_private(message: pyrogram.types.messages_and_media.message.Message, chatid: int, msgid: int):
+    msg: pyrogram.types.messages_and_media.message.Message = acc.get_messages(chatid, msgid)
+    msg_type = get_message_type(msg)
+
+    if "Text" == msg_type:
+        bot.send_message(message.chat.id, msg.text, entities=msg.entities, reply_to_message_id=message.id)
+        return
+
+    smsg = bot.send_message(message.chat.id, '__Downloading__', reply_to_message_id=message.id)
+    dosta = threading.Thread(target=lambda: downstatus(f'{message.id}downstatus.txt', smsg), daemon=True)
+    dosta.start()
+
+    # Download with optimizations
+    output_directory = "./downloads"  # Make sure this directory exists
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    file_path = acc.download_media(
+        msg,
+        progress=progress,
+        progress_args=[message, "down"],
+        block=True,  # Allows for chunked downloads
+        file_name=f"{output_directory}/{msg.document.file_name}" if msg_type == "Document" else None
+    )
+    os.remove(f'{message.id}downstatus.txt')
+
+    upsta = threading.Thread(target=lambda: upstatus(f'{message.id}upstatus.txt', smsg), daemon=True)
+    upsta.start()
+
+    # Send the downloaded file based on its type
+    if "Document" == msg_type:
+        bot.send_document(
+            message.chat.id, 
+            file_path, 
+            caption=msg.caption, 
+            caption_entities=msg.caption_entities, 
+            reply_to_message_id=message.id, 
+            progress=progress, 
+            progress_args=[message, "up"]
+        )
+    elif "Video" == msg_type:
+        bot.send_video(
+            message.chat.id, 
+            file_path, 
+            duration=msg.video.duration, 
+            width=msg.video.width, 
+            height=msg.video.height, 
+            caption=msg.caption, 
+            caption_entities=msg.caption_entities, 
+            reply_to_message_id=message.id, 
+            progress=progress, 
+            progress_args=[message, "up"]
+        )
+    elif "Photo" == msg_type:
+        bot.send_photo(
+            message.chat.id, 
+            file_path, 
+            caption=msg.caption, 
+            caption_entities=msg.caption_entities, 
+            reply_to_message_id=message.id
+        )
+
+    # Clean up
+    os.remove(file_path)
+    if os.path.exists(f'{message.id}upstatus.txt'):
+        os.remove(f'{message.id}upstatus.txt')
+    bot.delete_messages(message.chat.id, [smsg.id])
+
+# Get the type of message
 def get_message_type(msg: pyrogram.types.messages_and_media.message.Message):
-	try:
-		msg.document.file_id
-		return "Document"
-	except: pass
+    try:
+        msg.document.file_id
+        return "Document"
+    except: pass
 
-	try:
-		msg.video.file_id
-		return "Video"
-	except: pass
+    try:
+        msg.video.file_id
+        return "Video"
+    except: pass
 
-	try:
-		msg.animation.file_id
-		return "Animation"
-	except: pass
+    try:
+        msg.photo.file_id
+        return "Photo"
+    except: pass
 
-	try:
-		msg.sticker.file_id
-		return "Sticker"
-	except: pass
+    try:
+        msg.text
+        return "Text"
+    except: pass
 
-	try:
-		msg.voice.file_id
-		return "Voice"
-	except: pass
+# Start command
+@bot.on_message(filters.command(["start"]))
+def send_start(client: pyrogram.client.Client, message: pyrogram.types.messages_and_media.message.Message):
+    bot.send_message(message.chat.id, f"__👋 Hi **{message.from_user.mention}**, I am Save Restricted Bot, I can send you restricted content by its post link__\n\n{USAGE}",
+                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🌐 Source Code", url="https://github.com/bipinkrish/Save-Restricted-Bot")]]), 
+                     reply_to_message_id=message.id)
 
-	try:
-		msg.audio.file_id
-		return "Audio"
-	except: pass
+# Other functions remain the same
 
-	try:
-		msg.photo.file_id
-		return "Photo"
-	except: pass
-
-	try:
-		msg.text
-		return "Text"
-	except: pass
-
-
+# USAGE instructions
 USAGE = """**FOR PUBLIC CHATS**
 
 __just send post/s link__
